@@ -14,10 +14,7 @@ import "@aragon/os/contracts/common/IForwarder.sol";
 
 
 contract Actor is Vault, IERC165, IERC1271, IForwarder {
-    bytes32 public constant EXECUTE_ROLE = keccak256("EXECUTE_ROLE");
     bytes32 public constant RUN_SCRIPT_ROLE = keccak256("RUN_SCRIPT_ROLE");
-    bytes32 public constant PRESIGN_HASH_ROLE = keccak256("PRESIGN_HASH_ROLE");
-    bytes32 public constant DESIGNATE_SIGNER_ROLE = keccak256("DESIGNATE_SIGNER_ROLE");
 
     bytes4 public constant ISVALIDSIG_INTERFACE_ID = 0xabababab; // TODO: Add actual interfaceId
 
@@ -25,58 +22,13 @@ contract Actor is Vault, IERC165, IERC1271, IForwarder {
     string private constant ERROR_EXECUTE_TARGET_NOT_CONTRACT = "VAULT_EXECUTE_TARGET_NOT_CONTRACT";
 
     mapping (bytes32 => bool) public isPresigned;
-    address public designatedSigner;
 
-    event Execute(address indexed sender, address indexed target, uint256 ethValue, bytes data);
     event PresignHash(address indexed sender, bytes32 indexed hash);
     event SetDesignatedSigner(address indexed sender, address indexed oldSigner, address indexed newSigner);
 
-    // TODO: requires the @decodeData helper to be implemented in radspec
-    /**
-    * @notice Execute `@decodeData(target, data)` on `target` `ethValue == 0 ? '' : '(Sending' + @formatToken(ethValue, ETH) + ')'`.
-    * @param _target Address where the action is being executed
-    * @param _ethValue Amount of ETH from the contract that is sent with the action
-    * @param _data Calldata for the action
-    * @return Exits call frame forwarding the return data of the executed call (either error or success data)
-    */
-    function execute(address _target, uint256 _ethValue, bytes _data)
-        external // This function MUST always be external as the function performs a low level return, exiting the Actor app execution context
-        authP(EXECUTE_ROLE, arr(_target, _ethValue, uint256(getSig(_data)))) // TODO: Test that sig bytes are the least significant bytes
-    {
-        require(_ethValue == 0 || _data.length > 0, ERROR_EXECUTE_ETH_NO_DATA); // if ETH value is sent, there must be data
-        require(isContract(_target), ERROR_EXECUTE_TARGET_NOT_CONTRACT);
-
-        bool result = _target.call.value(_ethValue)(_data);
-
-        if (result) {
-            emit Execute(msg.sender, _target, _ethValue, _data);
-        }
-
-        assembly {
-            let size := returndatasize
-            let ptr := mload(0x40)
-            returndatacopy(ptr, 0, size)
-
-            // revert instead of invalid() bc if the underlying call failed with invalid() it already wasted gas.
-            // if the call returned error data, forward it
-            switch result case 0 { revert(ptr, size) }
-            default { return(ptr, size) }
-        }
-    }
-
-    function setDesignatedSigner(address _designatedSigner)
-        external
-        authP(DESIGNATE_SIGNER_ROLE, arr(_designatedSigner))
-    {
-        address oldDesignatedSigner = designatedSigner;
-        designatedSigner = _designatedSigner;
-
-        emit SetDesignatedSigner(msg.sender, oldDesignatedSigner, _designatedSigner);
-    }
-
     function presignHash(bytes32 _hash)
         external
-        authP(PRESIGN_HASH_ROLE, arr(_hash))
+        authP(RUN_SCRIPT_ROLE, arr(_hash))
     {
         isPresigned[_hash] = true;
 
@@ -112,11 +64,19 @@ contract Actor is Vault, IERC165, IERC1271, IForwarder {
             return true;
         }
 
+        address designatedSigner = signature.addressAt(36);
+        bytes designatedSignature = signature.bytesAt(56,signature.length-20);//TODO: needs to be written
+        //should return the entire signature except the address
+
+        if (!canPerform(designatedSigner,RUN_SCRIPT_ROLE)) {
+            return false;
+        }
+
         // Checks if designatedSigner is a contract, and if it supports the isValidSignature interface
         if (safeSupportsInterface(IERC165(designatedSigner), ISVALIDSIG_INTERFACE_ID)) {
             // designatedSigner.isValidSignature(hash, signature) as a staticall
             IERC1271 signerContract = IERC1271(designatedSigner);
-            bytes memory calldata = abi.encodeWithSelector(signerContract.isValidSignature.selector, hash, signature);
+            bytes memory calldata = abi.encodeWithSelector(signerContract.isValidSignature.selector, hash, designatedSignature);
             return safeBoolStaticCall(signerContract, calldata);
         }
 
@@ -124,7 +84,7 @@ contract Actor is Vault, IERC165, IERC1271, IForwarder {
         // doesn't support the interface. Here we check the validity of the ECDSA sig
         // which will always fail if designatedSigner is not an EOA
 
-        return SignatureValidator.isValidSignature(hash, designatedSigner, signature);
+        return SignatureValidator.isValidSignature(hash, designatedSigner, designatedSignature);
     }
 
     function canForward(address sender, bytes evmScript) public view returns (bool) {
