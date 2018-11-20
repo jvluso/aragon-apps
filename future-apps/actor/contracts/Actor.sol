@@ -7,6 +7,7 @@ pragma solidity 0.4.24;
 import "./SignatureValidator.sol";
 import "./standards/IERC165.sol";
 import "./standards/IERC1271.sol";
+import "./ScriptHelpers.sol";
 
 import "@aragon/apps-vault/contracts/Vault.sol";
 
@@ -14,6 +15,7 @@ import "@aragon/os/contracts/common/IForwarder.sol";
 
 
 contract Actor is Vault, IERC165, IERC1271, IForwarder {
+    using ScriptHelpers for bytes;
     bytes32 public constant RUN_SCRIPT_ROLE = keccak256("RUN_SCRIPT_ROLE");
 
     bytes4 public constant ISVALIDSIG_INTERFACE_ID = 0xabababab; // TODO: Add actual interfaceId
